@@ -1,7 +1,7 @@
 {
   "name": "dsh-opencode-zen-free",
-  "version": "1.0.0",
-  "description": "DSH Desktop plugin: komplett kostenlose Free-Modelle via OpenCode Zen — OpenAI-Chat, Responses (Muse Spark 1.3) & Anthropic (Muse) — mit Multi-Account Rotation, Auto-Discovery & User-Agent Bypass",
+  "version": "1.1.0",
+  "description": "DSH Desktop plugin: komplett kostenlose Free-Modelle via OpenCode Zen — Eager Bootstrap (alle Free-Modelle + Endpunkte/Settings bei Start), OpenAI-Chat/Responses/Anthropic, Profile-MultiAccount & User-Agent Bypass",
   "type": "module",
   "main": "./lib/index.js",
   "exports": {

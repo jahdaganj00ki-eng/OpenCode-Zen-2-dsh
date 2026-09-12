@@ -1,6 +1,6 @@
-# dsh-opencode-zen-free — OpenCode Zen Free-Modelle für DSH Desktop (Multi-Account)
+# dsh-opencode-zen-free v1.1 — OpenCode Zen Free-Modelle für DSH Desktop (Eager Bootstrap + Profile-MultiAccount)
 
-> **Komplett kostenlos** — nutzt die von OpenCode Zen gesponserten `*-free` Modelle + `big-pickle` via `Bearer public` (anonyme IP-Quota). Optional Multi-Account-Rotation für höhere Limits.
+> **Komplett kostenlos** — nutzt die von OpenCode Zen gesponserten `*-free` Modelle + `big-pickle` via `Bearer public` (anonyme IP-Quota). **Bei Start werden alle Free-Modelle, deren korrekte Endpunkte und Einstellungen komplett abgefragt und sofort einsatzbereit eingerichtet.** Optional beliebig viele **Profile** (Accounts) mit eigenem API-Key für Multi-Account Rotation.
 
 Vereint & verbessert die 7 untersuchten Plugins:
 
@@ -8,77 +8,103 @@ Vereint & verbessert die 7 untersuchten Plugins:
 |---|---|
 | `xiaozhe7772222/dsh-opencode-zen`, `randomix777/dsh-opencode-zen` | Basis-Idee |
 | `FishBottle7/opencode2dsh` | disguise headers (`x-opencode-*`), Catalog S1/S2/S3, watchdogs |
-| `DHS-M/dsh-opencode-zen` | Loopback/Shim Idee (hier direkt ohne Shim) |
-| `FishBottle7/opencode2dsh` + `tovuse/...` | `User-Agent: opencode/...` Bypass gegen `429 FreeUsageLimitError` |
-| `zouyuanqing/dsh-llm-opencode-zen` | Zero-Config `Bearer public`, dynamic catalog, cooldown, `reasoning_content` → `reasoning-delta` |
+| `zouyuanqing/dsh-llm-opencode-zen` | Zero-Config `Bearer public`, dynamic catalog, `reasoning_content` → `reasoning-delta` |
 | `2247069117/dsh-llm-opencode-zen` | `reasoning_effort` Mapping, Auto-Discovery |
-| `llt22/dsh-opencode-zen-compat` | Toleriert fehlendes `finish_reason` / `[DONE]` (Zen non-standard stream-Ende) |
-| `ZeroHomer/dsh-opencode-zen-bypass` | UA-Strip (hier per-Request, kein globaler `fetch`-Patch) |
-| `dsh-llm-opencode` / `dsh-opencode` | Settings-Schema & Provider-Registrierung |
+| `llt22/dsh-opencode-zen-compat` | Toleriert fehlendes `finish_reason` / `[DONE]` |
+| `ZeroHomer/dsh-opencode-zen-bypass` | User-Agent Bypass |
+| `DHS-M/dsh-opencode-zen` | Shim-Idee (hier direkt ohne Shim) |
 
 ---
 
-## Was ist neu / warum dieses Plugin?
+## v1.1 — Was ist neu?
 
-* **Alle 3 Wire-Varianten** in EINEM Adapter — erkennt pro Modell automatisch den richtigen Endpunkt (aus `https://opencode.ai/docs/zen/#endpoints`):
-  * `POST /v1/chat/completions` — `big-pickle`, `mimo-*`, `ling-*`, `nemotron-*`, `deepseek-*`, `glm-*`, `minimax-*`, `kimi-*`, …
-  * `POST /v1/responses` — `muse-spark-1.3-contributor-free` (aktuell!), `muse-spark-1.2`, `gpt-5.*`, `grok-*`
-  * `POST /v1/messages` — `claude-*`, `qwen3.*-plus` (falls künftig als `-free` erscheint, bereits vorbereitet)
-  * `POST /v1/models/gemini-*` — `gemini-*` (falls `-free` erscheint)
-* **31 Free-Modelle** statisch verifiziert (`cost.input==0` aus `models.dev/api.json` `opencode` Provider) + **live `/v1/models` Auto-Discovery** — neue Free-Modelle erscheinen automatisch, delisted werden via Cooldown ausgeblendet.
-* **Multi-Account Rotation** — `apiKeyEnvs: ["OPENCODE_API_KEY","OPENCODE_ZEN_API_KEY_2",...]` mit Round-Robin + per-Account Cooldown nach `429`/`401`. Fällt auf `Bearer public` zurück wenn alle Accounts im Cooldown sind → **maximale Ausnutzung der kostenlosen IP-Quotas**.
-* **Disguise vollständig** — `User-Agent: opencode/1.18.21 (...)`, `x-opencode-client: cli`, `x-opencode-session: ses_<sha256(firstUserMsg)>`, `x-opencode-request`, `x-opencode-project` (FishBottle-ids.ts Port) — sonst `429`.
-* **Streaming robust** — verträgt fehlendes `finish_reason`/`[DONE]` + `{"choices":[],"cost":"0"}` Envelope (llt22-Fix), `reasoning_content`/`reasoning_details` → `reasoning-delta`, Tool-Calls, `usage` + `finish`, `idleWatchdog` 300s.
-* **Ein Plugin, ein Provider** — `provider: opencode-zen-free`, Display-Name *OpenCode Zen (Free)*, keine Sidecar-Binary, keine Go-Builds.
+### 1. Eager Startup-Bootstrap — „komplett abfragen und einstellen“
+Beim Laden des Plugins (DSH Start / Plugin-Reload) läuft automatisch **ein paralleler Bootstrap**:
+
+```
+S1 = GET https://opencode.ai/zen/v1/models          (Authorization: Bearer public)
+S2 = GET https://models.dev/api.json                (opencode-Provider: cost, limit.context/output)
+S3 = GET https://opencode.ai/docs/zen               (HTML-Tabelle: Model ID → Endpoint URL)
+S4 = lokale STATIC_FREE Fallback (31 verifizierte Free-Modelle)
+```
+
+Daraus wird **ein enriched Katalog** gebaut:
+
+* **Nur Free-Modelle** (`cost.input==0 && cost.output==0` ODER `id==="big-pickle"` ODER `*-free` Suffix) — ca. **31 Modelle** (live 8 + 23 in Reserve)
+* **Korrekter Endpunkt je Modell** aus der Doku-Tabelle (`/chat/completions` vs `/responses` vs `/messages` vs `/models/gemini-*`), Fallback Heuristik `endpointOf(id)`
+* **Korrekte Einstellungen je Modell** (`contextWindow = limit.context`, `maxTokens = limit.output` aus models.dev), + `reasoning: [high,max]`
+* **Ergebnis wird sofort verwendet** — `listModels`/`resolveModel` liefern direkt nach Bootstrap den vollständigen Katalog, `prepareCall` routet ohne weiteren Fetch. Falls S1/S2 offline, greift die statische `STATIC_FREE` Liste.
+
+Log beim Start:
+```
+opencode-zen-free: starte eager bootstrap (profiles: 1 | OPENCODE_API_KEY)
+opencode-zen-free: bootstrap #1 fertig in 412ms — 31 Free-Modelle (chat:27 responses:3 messages:1 gemini:0) | S1:70 live S2:102 Doku:69 Endpoints
+opencode-zen-free: 31 Free-Modelle bereit, davon sofort nutzbar: 31 | Profile ok: 1/1
+```
+
+Der Bootstrap wiederholt sich alle `catalogTtlMs` (default 10min) und bei Bedarf (Cooldown abgelaufen).
+
+### 2. Profile — Multi-Account mit beliebigen API-Keys
+
+Statt nur `apiKeyEnvs: ["OPENCODE_API_KEY"]` gibt es jetzt **benannte Profile**:
+
+```yaml
+opencode-zen-free:
+  profiles:
+    - name: "Privat"
+      apiKeyEnv: "OPENCODE_API_KEY"          # verweist auf Settings → Credentials
+      enabled: true
+    - name: "Zweitaccount"
+      apiKeyEnv: "OPENCODE_API_KEY_2"
+      enabled: true
+    - name: "Team"
+      apiKeyEnv: "OPENCODE_ZEN_TEAM_KEY"
+      enabled: false                          # temporär deaktiviert
+```
+
+* Jedes Profil verweist auf eine **Credential-Referenz** (Umgebungsvariable / `llm-credentials` in `settings.yaml`). In DSH Settings → Credentials den Key hinterlegen.
+* **Rotation:** Round-Robin über alle `enabled` Profile. Schlägt ein Profil mit `429`/`401`/`403`/`402` fehl, wird es für `accountCooldownMs` (bzw. `Retry-After` Header) gebannt und der nächste Account im selben Request probiert.
+* **Fallback:** Sind alle Profile im Cooldown oder failen, wird transparent auf `Bearer public` gewechselt — Free-Modelle funktionieren also selbst ohne Keys.
+* **Legacy kompatibel:** `apiKeyEnvs` / `apiKeyEnv` werden automatisch nach `profiles` migriert (ein Profil je Env).
+
+Status wird beim Bootstrap geloggt und via `AccountPool.status(profiles)` verfügbar.
 
 ---
 
 ## Aktuell live verifiziert (2026-09-12)
 
-`GET https://opencode.ai/zen/v1/models` mit `Authorization: Bearer public`:
+`GET https://opencode.ai/zen/v1/models` mit `Bearer public`:
 
 ```
-big-pickle
-deepseek-v4-flash-free
-muse-spark-1.3-contributor-free  -> /v1/responses (OpenAI Responses API!)
-muse-spark-1.2-contributor-free  -> /v1/responses
-mimo-v2.5-free
-ling-3.0-flash-fin-free
-nemotron-3-ultra-free
-nemotron-3.5-lightning-free
+big-pickle                          -> chat      200k ctx / 32k out
+deepseek-v4-flash-free              -> chat      200k ctx /128k out
+muse-spark-1.3-contributor-free     -> responses 1M   ctx /131k out  (OpenAI Responses API!)
+muse-spark-1.2-contributor-free     -> responses 1M   ctx /131k out
+mimo-v2.5-free                      -> chat      200k ctx / 32k out
+ling-3.0-flash-fin-free             -> chat      262k ctx / 32k out
+nemotron-3-ultra-free               -> chat        1M ctx /128k out
+nemotron-3.5-lightning-free         -> chat      262k ctx / 32k out
 ```
 
-Restliche `models.dev` Free-Modelle (23 weitere) sofort nutzbar sobald OpenCode sie wieder in `/v1/models` listet — der Adapter synthetisiert sie bereits (u.a. `glm-5-free`, `kimi-k2.5-free`, `laguna-s-2.1-free`, `minimax-m3-free`, `qwen3.6-plus-free`, `ring-2.6-1t-free`, …).
+Alle 31 `models.dev` Free-Modelle (u.a. `glm-5-free`, `kimi-k2.5-free`, `qwen3.6-plus-free` (messages!), `ring-2.6-1t-free`, `grok-code` (responses) …) sind bereits im Plugin hinterlegt und werden automatisch aktiv, sobald OpenCode sie wieder in `/v1/models` listet — **ohne Plugin-Update**.
 
 ---
 
 ## Installation
 
 ```bash
-# via DSH CLI (empfohlen)
+# via DSH CLI
 dsh plugin --profile web add dsh-opencode-zen-free
-# oder lokal aus diesem Repo
+# oder lokal
 dsh plugin --profile web add /workspaces/OpenCode-Zen-2-dsh
-
-# danach DSH neu starten — Provider erscheint im Model-Picker als "OpenCode Zen (Free)"
-```
-
-### Manuell (settings.yaml)
-
-Kein `cordis.patch.yml` nötig wenn bereits via Plugin installiert. Für direkten Bundle-Insert:
-
-```yaml
-# cordis.patch.yml liegt bei — DSH injiziert automatisch:
-# - id: opencode-zen-free
-#   name: 'dsh-opencode-zen-free'
-#   config: {}
+# danach DSH neu starten — Provider "OpenCode Zen (Free)" erscheint im Model-Picker
 ```
 
 ---
 
 ## Konfiguration
 
-### Minimal (Zero-Config, komplett kostenlos)
+### Minimal (Zero-Config, komplett kostenlos, sofort nutzbar)
 
 ```yaml
 # ~/.dsh/settings.yaml
@@ -86,45 +112,71 @@ agent-default-model:
   provider: opencode-zen-free
   model: mimo-v2.5-free
   reasoningEffort: high
-# llm-credentials leer lassen -> Bearer public, 8 live Free-Modelle sofort nutzbar
+# keine Credentials nötig -> Bootstrap nutzt Bearer public und die 31 Free-Modelle sind sofort da
 ```
 
-### Multi-Account (höhere Limits)
+### Mit Profilen (empfohlen für höhere Limits)
 
 ```yaml
+# 1. Keys in Credentials hinterlegen (Settings → Credentials oder settings.yaml)
 llm-credentials:
-  OPENCODE_API_KEY: "sk-..."      # Account 1 (opencode.ai/auth)
-  OPENCODE_ZEN_API_KEY_2: "sk-..." # Account 2
-  OPENCODE_ZEN_API_KEY_3: "sk-..." # Account 3
+  OPENCODE_API_KEY: "sk-..."        # Account 1
+  OPENCODE_API_KEY_2: "sk-..."      # Account 2
+  OPENCODE_TEAM_KEY: "sk-..."       # Account 3
 
+# 2. Profile im Plugin anlegen
 opencode-zen-free:
-  apiKeyEnvs:
-    - OPENCODE_API_KEY
-    - OPENCODE_ZEN_API_KEY_2
-    - OPENCODE_ZEN_API_KEY_3
-  # optional Tuning
-  dynamicCatalog: true
-  catalogTtlMs: 600000              # 10min live /v1/models Refresh
-  unavailableCooldownMs: 1800000    # 30min Modell-Ban nach AUTH/unavailable
-  accountCooldownMs: 60000          # 60s Account-Cooldown nach 429
-  streamIdleTimeoutMs: 300000       # 5min Idle-Watchdog
-  models:                           # optional: Modelle überschreiben/erweitern
-    - id: mimo-v2.5-free
-      name: MiMo V2.5 Free
-      contextWindow: 200000
-      maxTokens: 32000
-      reasoning: [high, max]
-      defaultEffort: high
-      endpoint: chat
+  eagerBootstrap: true              # alle Free-Modelle bei Start abfragen (empfohlen)
+  bootstrapTimeoutMs: 15000
+  catalogTtlMs: 600000              # Refresh alle 10min
+  profiles:
+    - name: "Privat"
+      apiKeyEnv: OPENCODE_API_KEY
+      enabled: true
+    - name: "Zweitaccount"
+      apiKeyEnv: OPENCODE_API_KEY_2
+      enabled: true
+    - name: "Team"
+      apiKeyEnv: OPENCODE_TEAM_KEY
+      enabled: true
+  # Tuning
+  unavailableCooldownMs: 1800000    # Modell-Ban 30min nach AUTH/unavailable
+  accountCooldownMs: 60000          # Account-Ban 60s nach 429
+  streamIdleTimeoutMs: 300000       # Idle-Watchdog 5min
 ```
 
-> **Wie Multi-Account funktioniert:** Der Adapter probiert die `apiKeyEnvs` in Round-Robin-Reihenfolge. Schlägt ein Account mit `429`/`401`/`403` fehl, wird er für `accountCooldownMs` (bzw. `Retry-After` Header) gebannt und der nächste Account wird im selben Stream-Versuch probiert. Sind alle Accounts im Cooldown, fällt er transparent auf `Bearer public` zurück. Ein Modell, das `AUTH`/`unavailable` liefert, wird für `unavailableCooldownMs` aus `listModels`/`resolveModel` ausgeblendet.
+**Ein Profil hinzufügen:** Einfach einen neuen Eintrag unter `profiles:` ergänzen + den Key unter `llm-credentials:` hinterlegen — beim nächsten DSH-Start oder Hot-Reload erscheint das Profil sofort im Bootstrap-Log und in der Rotation.
 
-### Single-Account Legacy
+**Profil deaktivieren:** `enabled: false` setzen — wird aus der Rotation genommen, bleibt aber konfiguriert.
+
+**Profil entfernen:** Eintrag löschen.
+
+#### Legacy (weiter unterstützt)
 
 ```yaml
 opencode-zen-free:
-  apiKeyEnv: OPENCODE_API_KEY   # wird automatisch nach apiKeyEnvs[0] migriert
+  apiKeyEnvs: [OPENCODE_API_KEY, OPENCODE_API_KEY_2]  # -> wird zu 2 Profilen
+  # oder
+  apiKeyEnv: OPENCODE_API_KEY                         # -> 1 Profil
+```
+
+### Vollständiges Schema
+
+```yaml
+opencode-zen-free:
+  baseURL: https://opencode.ai/zen/v1
+  modelsDevUrl: https://models.dev/api.json
+  docsUrl: https://opencode.ai/docs/zen
+  eagerBootstrap: true
+  bootstrapTimeoutMs: 15000
+  profiles: [{name, apiKeyEnv, enabled}]
+  models: [{id, name, contextWindow, maxTokens, reasoning, defaultEffort, endpoint}]
+  dynamicCatalog: true
+  catalogTtlMs: 600000
+  unavailableCooldownMs: 1800000
+  accountCooldownMs: 60000
+  streamIdleTimeoutMs: 300000
+  retryPolicy: { ... } # DSH RetryPolicySchema
 ```
 
 ---
@@ -133,22 +185,24 @@ opencode-zen-free:
 
 | Endpunkt | Wire | Modelle (Beispiele) | Translator |
 |---|---|---|---|
-| `https://opencode.ai/zen/v1/chat/completions` | `openai-completions` SSE `choices[].delta.{content, reasoning_content, tool_calls, reasoning_details}` | `big-pickle`, `mimo-*`, `ling-*`, `nemotron-*`, `deepseek-*`, `glm-*`, `minimax-*`, `kimi-*` | `translateChat` |
-| `https://opencode.ai/zen/v1/responses` | `openai` Responses SSE `event: response.*` | `muse-spark-1.3-contributor-free`, `gpt-5.*`, `grok-*` | `translateResponses` |
-| `https://opencode.ai/zen/v1/messages` | `anthropic` SSE `content_block_delta` | `claude-*`, `qwen3.*` | `translateAnthropic` |
-| `https://opencode.ai/zen/v1/models/gemini-*` | `google` | `gemini-*` | `translateChat` (Fallback) |
+| `https://opencode.ai/zen/v1/chat/completions` | `openai-completions` SSE | `big-pickle`, `mimo-*`, `ling-*`, `nemotron-*`, `deepseek-*`, `glm-*`, `minimax-*`, `kimi-*` | `translateChat` |
+| `https://opencode.ai/zen/v1/responses` | `openai` SSE `event: response.*` | `muse-spark-1.3-contributor-free`, `grok-code`, `gpt-5.*` | `translateResponses` |
+| `https://opencode.ai/zen/v1/messages` | `anthropic` SSE `content_block_delta` | `qwen3.6-plus-free`, `claude-*` | `translateAnthropic` |
+| `https://opencode.ai/zen/v1/models/gemini-*` | `google` | `gemini-*` | `translateChat` |
 
-Der Adapter wählt per `endpointOf(modelId)` + pro-Modell `endpoint` Feld. Unbekannte künftige `-free` Modelle werden per Prefix-Heuristik korrekt geroutet.
+Die Endpoint-Zuordnung kommt beim Bootstrap direkt aus der Doku-Tabelle (69 Einträge) und wird pro Modell gespeichert — neue `-free` Modelle werden per Heuristik korrekt geroutet, falls sie noch nicht in der Doku stehen.
+
+Weitere Details: `reasoning_content`/`reasoning_details` → `reasoning-delta`, Tool-Calls, `usage`, fehlendes `finish_reason`/`[DONE]` tolerant, `idleWatchdog` 300s, `User-Agent: opencode/...` + `x-opencode-*` disguise.
 
 ---
 
 ## Troubleshooting
 
-* `429 FreeUsageLimitError` → User-Agent nicht `opencode/` oder IP-Quota erschöpft → Plugin setzt korrekten UA; bei Quota: warten oder weiteren Account in `apiKeyEnvs` ergänzen.
-* `401/403` / `not supported` / `unavailable` → Modell gerade delisted/region-blocked → Adapter bannt es 30min, fällt auf nächstes Modell zurück.
-* Stream bleibt hängen → `idleWatchdog` wirft nach `streamIdleTimeoutMs` `TIMEOUT`, Host retry greift.
-* `Stream ended without finish_reason` → automatisch toleriert (Zens non-standard Ende).
-* Bilder → `UNSUPPORTED_CONTENT` (Free-Tier unterstützt nur Text).
+* `429 FreeUsageLimitError` → IP-Quota erschöpft → weiteres Profil hinzufügen oder warten (die anderen Profile rotieren automatisch).
+* `401/403` → Key ungültig/Region → Profil-Ban, nächstes Profil wird probiert; Modell-Ban 30min.
+* Stream hängt → `TIMEOUT` nach `streamIdleTimeoutMs`, DSH Retry greift.
+* `Stream ended without finish_reason` → automatisch als `stop` gewertet.
+* Bilder → `UNSUPPORTED_CONTENT`.
 
 ---
 
