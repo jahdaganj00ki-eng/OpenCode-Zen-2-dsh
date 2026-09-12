@@ -1,0 +1,5 @@
+# DSH Desktop Bundle-Patch: registriert den Plugin-Service deployment-global
+- insert:
+    - id: opencode-zen-free
+      name: 'dsh-opencode-zen-free'
+      config: {}
